@@ -1,0 +1,2278 @@
+---
+title: "Final_project_DATA2020"
+author: "Zichen Zhao"
+date: "2026-04-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+base_dir <- "/Users/akshaya/Desktop/data2020-spring2026/Paper_3__Movie_Bo__Office_Prediction_export/wikipredict_data_pack/sample_of_312"
+movie_file <- file.path(base_dir, "sample_of_312")
+predictor_dir <- file.path(base_dir, "wikipedia_predictors")
+
+movies <- read.delim(movie_file, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+
+colnames(movies) <- c(
+  "movie_id",
+  "title",
+  "wp_page_title",
+  "revenue",
+  "theaters",
+  "release_date",
+  "article_inception_movie_time"
+)
+
+movies$movie_id <- as.integer(movies$movie_id)
+movies$revenue <- as.numeric(movies$revenue)
+movies$theaters <- as.numeric(movies$theaters)
+movies$release_date <- as.Date(movies$release_date)
+movies$article_inception_movie_time <- as.numeric(movies$article_inception_movie_time)
+
+head(movies)
+dim(movies)
+summary(movies$revenue)
+summary(movies$theaters)
+range(movies$release_date)
+```
+```{r}
+# Check missing values in movie-level data
+# Count missing values by column
+movie_missing_count <- colSums(is.na(movies))
+
+movie_missing_summary <- data.frame(
+  variable = names(movie_missing_count),
+  missing_count = as.integer(movie_missing_count),
+  total_rows = nrow(movies),
+  missing_percent = round(as.integer(movie_missing_count) / nrow(movies) * 100, 2)
+)
+
+movie_missing_summary
+
+```
+```{r}
+check_predictor_missing <- function(movie_ids = movies$movie_id, pred_dir = predictor_dir) {
+  out <- data.frame(
+    movie_id = integer(),
+    n_missing = integer(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (mid in movie_ids) {
+    fpath <- file.path(pred_dir, as.character(mid))
+    
+    if (!file.exists(fpath)) next
+    
+    df <- read.delim(fpath, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+    colnames(df) <- c("movie_time", "V", "U", "R", "E")
+    
+    miss_count <- sum(is.na(df))
+    
+    out <- rbind(out, data.frame(
+      movie_id = mid,
+      n_missing = miss_count,
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  out
+}
+
+predictor_missing_df <- check_predictor_missing()
+cat("Any predictor file with missing values?:", any(predictor_missing_df$n_missing > 0), "\n")
+cat("Number of files with at least one missing value:",
+    sum(predictor_missing_df$n_missing > 0), "\n")
+
+head(predictor_missing_df[predictor_missing_df$n_missing > 0, ])
+```
+```{r}
+# Check proportion of movies with no Wikipedia activity before t = -30
+check_no_activity_before_t <- function(t = -30, pred_dir = predictor_dir) {
+  
+  result_list <- lapply(movies$movie_id, function(movie_id) {
+    
+    file_path <- file.path(pred_dir, as.character(movie_id))
+    
+    # Case 1: predictor file does not exist
+    if (!file.exists(file_path)) {
+      return(data.frame(
+        movie_id = movie_id,
+        has_file = FALSE,
+        has_activity_before_t = FALSE,
+        reason = "no predictor file"
+      ))
+    }
+    
+    df <- read.delim(
+      file_path,
+      sep = "\t",
+      header = TRUE,
+      stringsAsFactors = FALSE
+    )
+    
+    colnames(df) <- c("movie_time", "V", "U", "R", "E")
+    df$movie_time <- as.numeric(df$movie_time)
+    
+# Check whether this movie has any Wikipedia record before or at t
+    has_activity <- any(!is.na(df$movie_time) & df$movie_time <= t)
+    
+    return(data.frame(
+      movie_id = movie_id,
+      has_file = TRUE,
+      has_activity_before_t = has_activity,
+      reason = ifelse(has_activity, "has activity before t", "no activity before t")
+    ))
+  })
+  
+  result_df <- do.call(rbind, result_list)
+  
+  return(result_df)
+}
+
+
+# Run check at t = -30
+no_activity_check_t30 <- check_no_activity_before_t(t = -30)
+
+# Summary table
+summary_t30 <- data.frame(
+  total_movies = nrow(no_activity_check_t30),
+  no_activity_before_t = sum(no_activity_check_t30$has_activity_before_t == FALSE),
+  has_activity_before_t = sum(no_activity_check_t30$has_activity_before_t == TRUE),
+  no_activity_percent = round(mean(no_activity_check_t30$has_activity_before_t == FALSE) * 100, 2),
+  has_activity_percent = round(mean(no_activity_check_t30$has_activity_before_t == TRUE) * 100, 2)
+)
+
+summary_t30
+
+
+```
+
+```{r}
+
+#the predictor variable for specific time t=-30
+load_predictors_for_movie <- function(movie_id, t = -30, pred_dir = predictor_dir) {
+  file_path <- file.path(pred_dir, as.character(movie_id))
+  
+  df <- read.delim(file_path, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+  colnames(df) <- c("movie_time", "V", "U", "R", "E")
+  
+  df$movie_time <- as.numeric(df$movie_time)
+  df$V <- as.numeric(df$V)
+  df$U <- as.numeric(df$U)
+  df$R <- as.numeric(df$R)
+  df$E <- as.numeric(df$E)
+  
+  df_sub <- df[df$movie_time <= t, ]
+  
+  if (nrow(df_sub) == 0) {
+    return(data.frame(
+      movie_id = movie_id,
+      V = 0,
+      U = 0,
+      R = 0,
+      E = 0
+    ))
+  }
+  
+  row <- df_sub[which.max(df_sub$movie_time), ]
+  
+  data.frame(
+    movie_id = movie_id,
+    V = row$V[1],
+    U = row$U[1],
+    R = row$R[1],
+    E = row$E[1]
+  )
+}
+#build dataset at t=-30
+build_dataset_at_time_t <- function(t = -30) {
+  predictor_list <- lapply(movies$movie_id, function(id) {
+    load_predictors_for_movie(movie_id = id, t = t, pred_dir = predictor_dir)
+  })
+  
+  predictor_df <- do.call(rbind, predictor_list)
+  
+  merged <- merge(movies, predictor_df, by = "movie_id", all.x = TRUE)
+  
+  merged <- merged[, c("movie_id", "title", "revenue", "theaters", "V", "U", "R", "E")]
+  
+  merged <- merged[complete.cases(merged[, c("revenue", "theaters")]), ]
+  
+  return(merged)
+}
+df_t <- build_dataset_at_time_t(t = -30)
+head(df_t)
+dim(df_t)
+str(df_t)
+```
+
+```{r}
+#Pearson correlation
+compute_correlations <- function(df) {
+  vars <- c("V", "U", "R", "E", "theaters")
+  cors <- sapply(vars, function(x) cor(df[[x]], df$revenue))
+  return(cors)
+}
+```
+
+```{r}
+#Figure 1
+# D-G is accumulated to t=7
+df_fig1 <- build_dataset_at_time_t(t = 7)
+
+
+df_fig1 <- merge(
+  df_fig1,
+  movies[, c("movie_id", "article_inception_movie_time")],
+  by = "movie_id",
+  all.x = TRUE
+)
+
+log_revenue  <- log10(df_fig1$revenue[df_fig1$revenue > 0])
+log_theaters <- log10(df_fig1$theaters[df_fig1$theaters > 0])
+log_V        <- log10(df_fig1$V[df_fig1$V > 0])
+log_U        <- log10(df_fig1$U[df_fig1$U > 0])
+log_R        <- log10(df_fig1$R[df_fig1$R > 0])
+log_E        <- log10(df_fig1$E[df_fig1$E > 0])
+tc_values    <- df_fig1$article_inception_movie_time
+
+par(mfrow = c(2, 4), mar = c(4, 4, 2, 1), oma = c(0, 0, 2, 0))
+
+# A
+hist(tc_values,
+     breaks = 30,
+     main = "A",
+     xlab = expression(t[c]),
+     ylab = "Count of movies",
+     col = "lightgray",
+     border = "gray40")
+
+# B
+hist(log_revenue,
+     breaks = 30,
+     main = "B",
+     xlab = expression(log[10](Y)),
+     ylab = "",
+     col = "lightgray",
+     border = "gray40")
+
+# C
+hist(log_theaters,
+     breaks = 30,
+     main = "C",
+     xlab = expression(log[10](T)),
+     ylab = "",
+     col = "lightgray",
+     border = "gray40")
+
+# D
+hist(log_V,
+     breaks = 30,
+     main = "D",
+     xlab = expression(log[10](V)),
+     ylab = "Count of movies",
+     col = "lightgray",
+     border = "gray40")
+
+# E
+hist(log_U,
+     breaks = 30,
+     main = "E",
+     xlab = expression(log[10](U)),
+     ylab = "",
+     col = "lightgray",
+     border = "gray40")
+
+# F
+hist(log_R,
+     breaks = 30,
+     main = "F",
+     xlab = expression(log[10](R)),
+     ylab = "",
+     col = "lightgray",
+     border = "gray40")
+
+# G
+hist(log_E,
+     breaks = 30,
+     main = "G",
+     xlab = expression(log[10](E)),
+     ylab = "",
+     col = "lightgray",
+     border = "gray40")
+
+plot.new()
+
+mtext("Figure 1(replicated)", outer = TRUE, cex = 1.2)
+
+
+
+```
+
+
+
+```{r}
+#Pearson correlation over time
+time_points <- seq(-400, 100, by = 1)
+
+corr_tracking <- data.frame(
+  t = integer(),
+  V = numeric(),
+  U = numeric(),
+  R = numeric(),
+  E = numeric(),
+  T = numeric()
+)
+
+for (tt in time_points) {
+  df_now <- build_dataset_at_time_t(t = tt)
+  
+  if (nrow(df_now) == 0) next
+  
+  cors <- compute_correlations(df_now)
+  
+  corr_tracking <- rbind(
+    corr_tracking,
+    data.frame(
+      t = tt,
+      V = cors["V"],
+      U = cors["U"],
+      R = cors["R"],
+      E = cors["E"],
+      T = cors["theaters"]
+    )
+  )
+}
+head(corr_tracking)
+
+plot(
+  corr_tracking$t, corr_tracking$V,
+  type = "l",
+  lwd = 2,
+  ylim = c(0.5, 1.0),
+  xlab = "Time (day)",
+  ylab = expression(r[j](t)),
+  main = "Temporal evolution of Pearson correlation(replicated)"
+)
+
+lines(corr_tracking$t, corr_tracking$U, lwd = 2, col = 2)
+lines(corr_tracking$t, corr_tracking$R, lwd = 2, col = 3)
+lines(corr_tracking$t, corr_tracking$E, lwd = 2, col = 4)
+lines(corr_tracking$t, corr_tracking$T, lwd = 2, col = "gray40", lty = 2)
+
+legend(
+  "bottomright",
+  legend = c("V", "U", "R", "E", "T"),
+  col = c(1, 2, 3, 4, "gray40"),
+  lty = c(1, 1, 1, 1, 2),
+  lwd = 2,
+  bty = "n"
+)
+
+```
+
+```{r}
+# 10-fold CV R^2
+cv_r2 <- function(df, feature_cols, k = 10, seed = 42) {
+  set.seed(seed)
+  n <- nrow(df)
+  
+  folds <- sample(rep(1:k, length.out = n))
+  r2_list <- c()
+  
+  formula_str <- paste("revenue ~", paste(feature_cols, collapse = " + "))
+  model_formula <- as.formula(formula_str)
+  
+  for (fold in 1:k) {
+    train_data <- df[folds != fold, ]
+    test_data  <- df[folds == fold, ]
+    
+    model <- lm(model_formula, data = train_data)
+    pred <- predict(model, newdata = test_data)
+    
+    y_true <- test_data$revenue
+    
+    ss_res <- sum((y_true - pred)^2)
+    ss_tot <- sum((y_true - mean(y_true))^2)
+    r2 <- 1 - ss_res / ss_tot
+    
+    r2_list <- c(r2_list, r2)
+  }
+  
+  return(list(
+    mean_r2 = mean(r2_list),
+    sd_r2 = sd(r2_list),
+    all_r2 = r2_list
+  ))
+}
+```
+
+```{r}
+
+# t = -30
+t_point <- -30
+df_t <- build_dataset_at_time_t(t = t_point)
+
+head(df_t)
+dim(df_t)
+
+if (nrow(df_t) == 0) {
+  stop("df_t is empty. Please check build_dataset_at_time_t() and file paths.")
+}
+
+cat(paste0("\nPearson correlations at t = ", t_point, ":\n"))
+print(compute_correlations(df_t))
+
+feature_sets <- list(
+  c("theaters"),
+  c("V"),
+  c("V", "theaters"),
+  c("U", "theaters"),
+  c("V", "U", "R", "E"),
+  c("V", "U", "R", "E", "theaters")
+)
+
+results <- data.frame(
+  features = character(),
+  mean_r2 = numeric(),
+  sd_r2 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (fs in feature_sets) {
+  out <- cv_r2(df = df_t, feature_cols = fs, k = 10, seed = 42)
+  
+  results <- rbind(
+    results,
+    data.frame(
+      features = paste(fs, collapse = ", "),
+      mean_r2 = out$mean_r2,
+      sd_r2 = out$sd_r2,
+      stringsAsFactors = FALSE
+    )
+  )
+}
+
+results <- results[order(-results$mean_r2), ]
+
+cat(paste0("\nR^2 results at t = ", t_point, ":\n"))
+print(results)
+
+```
+
+```{r}
+# Figure 3 R^2
+time_points <- -30:10
+
+tracking <- data.frame(
+  t = integer(),
+  model = character(),
+  r2 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+model_list <- list(
+  "{T}" = c("theaters"),
+  "{V}" = c("V"),
+  "{V,T}" = c("V", "theaters"),
+  "{U}" = c("U"),
+  "{U,T}" = c("U", "theaters"),
+  "{V,U,R,E}" = c("V", "U", "R", "E"),
+  "{V,U,R,E,T}" = c("V", "U", "R", "E", "theaters")
+)
+
+for (tt in time_points) {
+  df_now <- build_dataset_at_time_t(tt)
+  
+  for (model_name in names(model_list)) {
+    fs <- model_list[[model_name]]
+    out <- cv_r2(df_now, fs, k = 10, seed = 42)
+    
+    tracking <- rbind(tracking, data.frame(
+      t = tt,
+      model = model_name,
+      r2 = out$mean_r2,
+      stringsAsFactors = FALSE
+    ))
+  }
+}
+model_colors <- c(
+  "{T}" = "gray50",
+  "{V}" = "blue",
+  "{V,T}" = "blue",
+  "{U}" = "pink",
+  "{U,T}" = "red",
+  "{V,U,R,E}" = "green3",
+  "{V,U,R,E,T}" = "green3"
+)
+
+model_lty <- c(
+  "{T}" = 2,          
+  "{V}" = 3,           
+  "{V,T}" = 1,      
+  "{U}" = 3,
+  "{U,T}" = 1,
+  "{V,U,R,E}" = 3,
+  "{V,U,R,E,T}" = 1
+)
+
+plot(
+  NULL,
+  xlim = range(tracking$t),
+  ylim = c(0.35, 0.8),
+  xlab = "Time (day)",
+  ylab = expression(R^2(t)),
+  main = " Figure 3: CV R^2 by Predictor Set(replicated) "
+)
+
+models <- names(model_list)
+
+for (m in models) {
+  sub <- tracking[tracking$model == m, ]
+  lines(
+    sub$t, sub$r2,
+    type = "l",
+    col = model_colors[m],
+    lty = model_lty[m],
+    lwd = 2
+  )
+}
+
+legend(
+  "bottomright",
+  legend = models,
+  col = model_colors[models],
+  lty = model_lty[models],
+  lwd = 2,
+  cex = 0.9,
+  bty = "n"
+)
+
+```
+ 
+
+```{r}
+
+asur_dir <- "/Users/akshaya/Desktop/data2020-spring2026/Paper_3__Movie_Bo__Office_Prediction_export/wikipredict_data_pack/asur_huberman_sample_of_24"
+
+# Check what is inside this folder
+list.files(asur_dir)
+
+# The actual data file is usually inside the folder with the same name
+asur_file <- file.path(asur_dir, "asur_huberman_sample_of_24")
+
+# Check path
+asur_file
+file.exists(asur_file)
+
+# Read the 24-movie sample
+asur24 <- read.delim(
+  asur_file,
+  sep = "\t",
+  header = TRUE,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+dim(asur24)
+head(asur24)
+colnames(asur24)
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+
+base_dir_24 <- "/Users/akshaya/Desktop/data2020-spring2026/Paper_3__Movie_Bo__Office_Prediction_export/wikipredict_data_pack/asur_huberman_sample_of_24"
+movie_file_24 <- file.path(base_dir_24, "asur_huberman_sample_of_24")
+predictor_dir_24 <- file.path(base_dir_24, "wikipedia_predictors")
+
+asur24 <- read.delim(
+  movie_file_24,
+  sep = "\t",
+  header = TRUE,
+  stringsAsFactors = FALSE
+)
+
+colnames(asur24) <- c(
+  "movie_id", "title", "wp_page_title",
+  "revenue", "theaters", "release_date"
+)
+
+asur24$movie_id <- as.integer(asur24$movie_id)
+asur24$revenue <- as.numeric(asur24$revenue)
+asur24$theaters <- as.numeric(asur24$theaters)
+
+load_predictors_24 <- function(mid, t, pred_dir = predictor_dir_24) {
+  fpath <- file.path(pred_dir, as.character(mid))
+
+  if (!file.exists(fpath)) {
+    return(data.frame(movie_id = mid, V = NA, U = NA, R = NA, E = NA))
+  }
+
+  df <- read.delim(fpath, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+  colnames(df) <- c("movie_time", "V", "U", "R", "E")
+  df <- suppressWarnings(as.data.frame(lapply(df, as.numeric)))
+
+  df_sub <- df[!is.na(df$movie_time) & df$movie_time <= t, ]
+
+  if (nrow(df_sub) == 0) {
+    return(data.frame(movie_id = mid, V = 0, U = 0, R = 0, E = 0))
+  }
+
+  row <- df_sub[which.max(df_sub$movie_time), ]
+
+  data.frame(
+    movie_id = mid,
+    V = row$V,
+    U = row$U,
+    R = row$R,
+    E = row$E
+  )
+}
+
+build_dataset_24 <- function(t) {
+  pred_list <- lapply(
+    asur24$movie_id,
+    function(mid) load_predictors_24(mid, t = t)
+  )
+
+  pred_df <- do.call(rbind, pred_list)
+
+  merged <- merge(asur24, pred_df, by = "movie_id", all.x = TRUE)
+  merged <- merged[, c("movie_id", "title", "revenue", "theaters", "V", "U", "R", "E")]
+  merged <- merged[complete.cases(merged[, c("revenue", "theaters")]), ]
+
+  merged
+}
+
+
+```
+
+```{r}
+time_points_fig4 <- -30:10
+
+fig4_results <- data.frame(
+  t = integer(),
+  r2_wiki = numeric(),
+  n = integer(),
+  stringsAsFactors = FALSE
+)
+
+for (tt in time_points_fig4) {
+  df_24 <- build_dataset_24(t = tt)
+
+  for (col in c("V", "U", "R", "E")) {
+    df_24[[col]][is.na(df_24[[col]])] <- 0
+  }
+
+  n_obs <- nrow(df_24)
+
+  if (n_obs < 5) {
+    fig4_results <- rbind(
+      fig4_results,
+      data.frame(t = tt, r2_wiki = NA, n = n_obs)
+    )
+    next
+  }
+
+  model <- lm(revenue ~ V + U + R + E + theaters, data = df_24)
+  pred <- predict(model, newdata = df_24)
+
+  sse <- sum((df_24$revenue - pred)^2)
+  sst <- sum((df_24$revenue - mean(df_24$revenue))^2)
+  r2_val <- 1 - sse / sst
+
+  fig4_results <- rbind(
+    fig4_results,
+    data.frame(t = tt, r2_wiki = r2_val, n = n_obs)
+  )
+}
+
+print(fig4_results)
+
+
+
+```
+```{r}
+#Figure 4
+
+fig4_clean <- fig4_results[!is.na(fig4_results$r2_wiki), ]
+
+plot(
+  fig4_clean$t,
+  fig4_clean$r2_wiki,
+  type = "l",
+  lwd = 2,
+  col = "black",
+  xlim = c(-30, 10),
+  ylim = c(0.92, 1.00),
+  xlab = "Time (days)",
+  ylab = expression(R^2(t)),
+  main = "Figure 4 (replicated)",
+  las = 1
+)
+
+# Twitter benchmark line from t = 0 to t = 10
+segments(
+  x0 = 0,
+  x1 = 10,
+  y0 = 0.98,
+  y1 = 0.98,
+  col = "black",
+  lty = 2,
+  lwd = 2
+)
+
+# Vertical release-day line
+abline(
+  v = 0,
+  col = "gray60",
+  lty = 3,
+  lwd = 1.5
+)
+
+legend(
+  "topleft",
+  legend = c("Wikipedia-based method", "Twitter-based method"),
+  col = c("black", "black"),
+  lty = c(1, 2),
+  lwd = 2,
+  bty = "n",
+  cex = 0.9
+)
+```
+
+
+
+
+
+
+```{r}
+# full 312-movie sample at t = -30
+df_full <- build_dataset_at_time_t(-30)
+
+model_full <- lm(revenue ~ V + U + R + E + theaters, data = df_full)
+df_full$predicted_revenue <- predict(model_full, newdata = df_full)
+
+plot_full <- df_full[
+  df_full$predicted_revenue > 0 &
+  df_full$revenue > 0 &
+  df_full$predicted_revenue >= 1e3 & df_full$predicted_revenue <= 1e9 &
+  df_full$revenue >= 1e3 & df_full$revenue <= 1e9, ]
+
+# 24-movie sample at t = -30
+df_24 <- build_dataset_24(-30)
+
+for (col in c("V", "U", "R", "E")) {
+  df_24[[col]][is.na(df_24[[col]])] <- 0
+}
+
+model_24 <- lm(revenue ~ V + U + R + E + theaters, data = df_24)
+df_24$predicted_revenue <- predict(model_24, newdata = df_24)
+
+plot_24 <- df_24[
+  df_24$predicted_revenue > 0 &
+  df_24$revenue > 0 &
+  df_24$predicted_revenue >= 1e3 & df_24$predicted_revenue <= 1e9 &
+  df_24$revenue >= 1e3 & df_24$revenue <= 1e9, ]
+```
+
+```{r}
+
+par(mar = c(5, 5, 2, 2), xaxs = "i", yaxs = "i")
+
+plot(
+  plot_full$predicted_revenue,
+  plot_full$revenue,
+  log = "xy",
+  type = "n",
+  xlim = c(1e3, 1e9),
+  ylim = c(1e3, 1e9),
+  xlab = "Predicted revenue (USD)",
+  ylab = "Actual revenue (USD)",
+  asp = 1
+)
+
+# 312 movies
+points(
+  plot_full$predicted_revenue,
+  plot_full$revenue,
+  pch = 15,
+  cex = 0.55,
+  col = "gray30"
+)
+
+# 24 movies
+points(
+  plot_24$predicted_revenue,
+  plot_24$revenue,
+  pch = 15,
+  cex = 0.55,
+  col = "green"
+)
+
+# ideal prediction
+abline(a = 0, b = 1, col = "red", lty = 2)
+
+mtext("Wikipedia Prediction of Movie Box Office", side = 3, line = 0.6, adj = 1, cex = 0.8)
+
+legend(
+  "bottomright",
+  inset = c(0.02, 0.02),
+  legend = c(
+    "Sample of 312 movies",
+    "Sample of 24 movies (from Twitter-based study)",
+    "Ideal prediction"
+  ),
+  pch = c(15, 15, NA),
+  lty = c(NA, NA, 2),
+  col = c("gray30", "green", "red"),
+  pt.cex = c(0.65, 0.65, NA),
+  cex = 0.82,
+  bty = "n"
+)
+
+
+```
+
+```{r extension}
+# step1a.check the revenue distribution(highly skewed)
+library(ggplot2)
+
+ggplot(movies, aes(x = revenue)) +
+  geom_histogram(bins = 40) +
+  labs(
+    title = "Distribution of Opening Weekend Revenue",
+    x = "Opening weekend revenue",
+    y = "Count"
+  )
+#log scale
+ggplot(movies, aes(x = log(revenue))) +
+  geom_histogram(bins = 40) +
+  labs(
+    title = "Distribution of Log Opening Weekend Revenue",
+    x = "Log opening weekend revenue",
+    y = "Count"
+  )
+
+```
+
+
+```{r}
+#Linear regression assumption check
+# Add log-transformed predictors
+df_full$log_V <- log1p(df_full$V)
+df_full$log_U <- log1p(df_full$U)
+df_full$log_R <- log1p(df_full$R)
+df_full$log_E <- log1p(df_full$E)
+df_full$log_theaters <- log1p(df_full$theaters)
+df_full$log_revenue <- log(df_full$revenue)
+
+# Article-style raw OLS with log-transformed predictors
+model_full_logX <- lm(
+  revenue ~ log_V + log_U + log_R + log_E + log_theaters,
+  data = df_full
+)
+
+# Extension: log-revenue OLS with log-transformed predictors
+model_log_logX <- lm(
+  log_revenue ~ log_V + log_U + log_R + log_E + log_theaters,
+  data = df_full
+)
+
+summary(model_full_logX)
+summary(model_log_logX)
+```
+```{r}
+# Assumption plots for article-style raw OLS baseline
+par(mfrow = c(2, 2))
+plot(model_full)
+par(mfrow = c(1, 1))
+# Article-style raw OLS with log-transformed predictors
+par(mfrow = c(2, 2))
+plot(model_full_logX)
+par(mfrow = c(1, 1))
+# log-revenue OLS with log-transformed predictors
+par(mfrow = c(2, 2))
+plot(model_log_logX)
+par(mfrow = c(1, 1))
+
+```
+
+```{r}
+
+# Independence assumption check based on the fitted log-log model
+# Extract the exact rows used in model_log_logX
+model_rows <- as.integer(rownames(model.frame(model_log_logX)))
+
+# Build diagnostic dataframe directly from the fitted model
+diag_ind <- data.frame(
+  row_id = model_rows,
+  fitted = fitted(model_log_logX),
+  residual = resid(model_log_logX),
+  standardized_residual = rstandard(model_log_logX)
+)
+
+# Add release date if it exists in df_full
+if ("release_date" %in% names(df_full)) {
+  diag_ind$release_date <- as.Date(df_full$release_date[model_rows])
+}
+
+# If release_date is not in df_full but exists in movies, use row order fallback
+if (!"release_date" %in% names(diag_ind)) {
+  if (exists("movies") && "release_date" %in% names(movies) && nrow(movies) >= max(model_rows)) {
+    diag_ind$release_date <- as.Date(movies$release_date[model_rows])
+  }
+}
+
+# Sort by release date if available
+if ("release_date" %in% names(diag_ind) && sum(!is.na(diag_ind$release_date)) > 0) {
+  diag_ind <- diag_ind[order(diag_ind$release_date), ]
+}
+
+# Create release order
+diag_ind$release_order <- seq_len(nrow(diag_ind))
+
+head(diag_ind)
+dim(diag_ind)
+```
+
+
+```{r}
+## Plot 1: Residuals vs Release Order
+ggplot(diag_ind, aes(x = release_order, y = residual)) +
+  geom_point(alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "Independence Check: Residuals vs Release Order",
+    x = "Release order",
+    y = "Residuals from log-log model"
+  )
+
+
+```
+
+
+
+```{r}
+# Plot 2: Residuals vs Release Date
+if ("release_date" %in% names(diag_ind) && sum(!is.na(diag_ind$release_date)) > 0) {
+  
+  ggplot(diag_ind, aes(x = release_date, y = residual)) +
+    geom_point(alpha = 0.7) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_smooth(se = FALSE) +
+    labs(
+      title = "Independence Check: Residuals vs Release Date",
+      x = "Release date",
+      y = "Residuals from log-log model"
+    )
+  
+} else {
+  print("release_date is not available, so this plot is skipped.")
+}
+```
+
+```{r}
+library(ggplot2)
+
+# Function to extract Cook's distance and related diagnostic values
+get_cook_data <- function(model, data, model_name) {
+  
+  model_rows <- as.integer(rownames(model.frame(model)))
+  
+  out <- data.frame(
+    row_id = model_rows,
+    model = model_name,
+    cooks_distance = cooks.distance(model),
+    leverage = hatvalues(model),
+    standardized_residual = rstandard(model)
+  )
+  
+  # Add movie title if available
+  if ("title" %in% names(data)) {
+    out$title <- data$title[model_rows]
+  } else if ("Title" %in% names(data)) {
+    out$title <- data$Title[model_rows]
+  } else {
+    out$title <- paste("Movie", model_rows)
+  }
+  
+  # Add revenue if available
+  if ("revenue" %in% names(data)) {
+    out$revenue <- data$revenue[model_rows]
+  }
+  
+  return(out)
+}
+
+# Raw revenue OLS with log-transformed predictors
+cook_raw <- get_cook_data(
+  model = model_full_logX,
+  data = df_full,
+  model_name = "Raw revenue OLS"
+)
+
+# Log-revenue OLS with log-transformed predictors
+cook_log <- get_cook_data(
+  model = model_log_logX,
+  data = df_full,
+  model_name = "Log-log OLS"
+)
+
+cook_all <- rbind(cook_raw, cook_log)
+
+head(cook_all)
+
+```
+```{r}
+#cook's distance
+get_cook_data <- function(model, data, model_name) {
+  
+  model_rows <- as.integer(rownames(model.frame(model)))
+  
+  out <- data.frame(
+    row_id = model_rows,
+    model = model_name,
+    cooks_distance = cooks.distance(model),
+    leverage = hatvalues(model),
+    standardized_residual = rstandard(model)
+  )
+  
+  # Add movie title
+  if ("title" %in% names(data)) {
+    out$title <- data$title[model_rows]
+  } else if ("Title" %in% names(data)) {
+    out$title <- data$Title[model_rows]
+  } else {
+    out$title <- paste("Movie", model_rows)
+  }
+  
+  # Add revenue
+  if ("revenue" %in% names(data)) {
+    out$revenue <- data$revenue[model_rows]
+  }
+  
+  return(out)
+}
+
+# Raw revenue OLS with log-transformed predictors
+cook_raw <- get_cook_data(
+  model = model_full_logX,
+  data = df_full,
+  model_name = "Raw revenue OLS"
+)
+
+# Log-revenue OLS with log-transformed predictors
+cook_log <- get_cook_data(
+  model = model_log_logX,
+  data = df_full,
+  model_name = "Log-log OLS"
+)
+
+cook_all <- rbind(cook_raw, cook_log)
+
+head(cook_all)
+#plot Cook's Distance
+ggplot(cook_all, aes(x = row_id, y = cooks_distance)) +
+  geom_point(alpha = 0.7) +
+  geom_hline(
+    data = cook_all |>
+      dplyr::group_by(model) |>
+      dplyr::summarise(threshold = 4 / dplyr::n(), .groups = "drop"),
+    aes(yintercept = threshold),
+    linetype = "dashed"
+  ) +
+  facet_wrap(~ model, scales = "free_y") +
+  labs(
+    title = "Cook's Distance for Raw OLS and Log-log OLS",
+    x = "Movie index",
+    y = "Cook's distance"
+  )
+
+```
+```{r}
+#find that influence observation
+library(knitr)
+
+# Extract Cook's distance for log-log model
+model_rows <- as.integer(rownames(model.frame(model_log_logX)))
+
+cook_log_detail <- data.frame(
+  row_id = model_rows,
+  cooks_distance = cooks.distance(model_log_logX),
+  leverage = hatvalues(model_log_logX),
+  standardized_residual = rstandard(model_log_logX)
+)
+
+# Add movie information
+if ("title" %in% names(df_full)) {
+  cook_log_detail$title <- df_full$title[model_rows]
+} else if ("Title" %in% names(df_full)) {
+  cook_log_detail$title <- df_full$Title[model_rows]
+}
+
+cook_log_detail$revenue <- df_full$revenue[model_rows]
+cook_log_detail$V <- df_full$V[model_rows]
+cook_log_detail$U <- df_full$U[model_rows]
+cook_log_detail$R <- df_full$R[model_rows]
+cook_log_detail$E <- df_full$E[model_rows]
+cook_log_detail$theaters <- df_full$theaters[model_rows]
+
+# Common Cook's distance threshold
+cook_threshold <- 4 / nobs(model_log_logX)
+
+top_cook_log <- cook_log_detail %>%
+  arrange(desc(cooks_distance)) %>%
+  mutate(
+    above_threshold = cooks_distance > cook_threshold
+  ) %>%
+  slice(1:10)
+
+kable(top_cook_log, digits = 4)
+cook_threshold
+
+
+```
+
+```{r}
+# Identify the most influential observation in log-log model
+top_row <- top_cook_log$row_id[1]
+
+top_row
+df_full[top_row, ]
+
+# Full log-log model
+model_log_logX_full <- lm(
+  log_revenue ~ log_V + log_U + log_R + log_E + log_theaters,
+  data = df_full
+)
+
+# Remove the most influential observation
+df_without_top <- df_full[-top_row, ]
+
+model_log_logX_without_top <- lm(
+  log_revenue ~ log_V + log_U + log_R + log_E + log_theaters,
+  data = df_without_top
+)
+
+summary(model_log_logX_full)
+summary(model_log_logX_without_top)
+#compare any big changese happened in coefficients
+coef_compare <- data.frame(
+  term = names(coef(model_log_logX_full)),
+  full_model = coef(model_log_logX_full),
+  without_top = coef(model_log_logX_without_top)
+)
+
+coef_compare$absolute_change <- coef_compare$without_top - coef_compare$full_model
+coef_compare$percent_change <- 100 * coef_compare$absolute_change / abs(coef_compare$full_model)
+
+knitr::kable(coef_compare, digits = 4)
+```
+
+
+
+```{r}
+library(dplyr)
+# Prepare log-model dataset
+df_ms <- build_dataset_at_time_t(-30)
+
+
+# Log-transform outcome and predictors
+df_ms$log_revenue <- log(df_ms$revenue)
+
+df_ms$log_V <- log1p(df_ms$V)
+df_ms$log_U <- log1p(df_ms$U)
+df_ms$log_R <- log1p(df_ms$R)
+df_ms$log_E <- log1p(df_ms$E)
+df_ms$log_theaters <- log1p(df_ms$theaters)
+
+summary(df_ms$log_revenue)
+dim(df_ms)
+# 4 log model 
+candidate_formulas <- list(
+  
+  "Log Model A: Wikipedia only" =
+    log_revenue ~ log_V + log_U + log_R + log_E,
+  
+  "Log Model B: Wikipedia + theaters" =
+    log_revenue ~ log_V + log_U + log_R + log_E + log_theaters,
+  
+  "Log Model C: Reduced no rigor" =
+    log_revenue ~ log_V + log_U + log_E + log_theaters,
+ #V has high relative with the revenue before movies release 
+   "Log Model D: Simple benchmark"=
+     log_revenue ~ log_V + log_theaters
+)
+
+
+# Create cross-validation folds
+set.seed(529)
+
+make_folds <- function(data, k = 5) {
+  
+  n <- nrow(data)
+  
+  if ("release_date" %in% names(data)) {
+    
+    data$release_date <- as.Date(data$release_date)
+    data <- data[order(data$release_date), ]
+    
+    folds <- list(
+      fold1 = list(
+        train = 1:floor(0.50 * n),
+        test = (floor(0.50 * n) + 1):floor(0.65 * n)
+      ),
+      fold2 = list(
+        train = 1:floor(0.65 * n),
+        test = (floor(0.65 * n) + 1):floor(0.80 * n)
+      ),
+      fold3 = list(
+        train = 1:floor(0.80 * n),
+        test = (floor(0.80 * n) + 1):n
+      )
+    )
+    
+  } else {
+    
+    fold_id <- sample(rep(1:k, length.out = n))
+    
+    folds <- lapply(1:k, function(i) {
+      list(
+        train = which(fold_id != i),
+        test = which(fold_id == i)
+      )
+    })
+    
+    names(folds) <- paste0("fold", 1:k)
+  }
+  
+  return(list(data = data, folds = folds))
+}
+
+fold_object <- make_folds(df_ms, k = 10)
+
+df_ms_cv <- fold_object$data
+folds <- fold_object$folds
+
+names(folds)
+
+# Cross-validation function
+run_cv_for_model <- function(data, folds, formula_obj, model_name) {
+  
+  metrics_all <- data.frame()
+  predictions_all <- data.frame()
+  
+  for (fold_name in names(folds)) {
+    
+    train_idx <- folds[[fold_name]]$train
+    test_idx <- folds[[fold_name]]$test
+    
+    train_data <- data[train_idx, ]
+    test_data <- data[test_idx, ]
+    
+    vars_needed <- unique(c(all.vars(formula_obj), "revenue"))
+    
+    train_data <- train_data[complete.cases(train_data[, vars_needed]), ]
+    test_data <- test_data[complete.cases(test_data[, vars_needed]), ]
+    
+    fit <- lm(formula_obj, data = train_data)
+    
+    pred_log <- predict(fit, newdata = test_data)
+    pred_revenue <- exp(pred_log)
+    
+    actual_log <- test_data$log_revenue
+    actual_revenue <- test_data$revenue
+    
+    Log_RMSE <- sqrt(mean((actual_log - pred_log)^2, na.rm = TRUE))
+    Log_MAE <- mean(abs(actual_log - pred_log), na.rm = TRUE)
+    
+    MAE <- mean(abs(actual_revenue - pred_revenue), na.rm = TRUE)
+    RMSE <- sqrt(mean((actual_revenue - pred_revenue)^2, na.rm = TRUE))
+    RMSLE <- sqrt(mean((log1p(actual_revenue) - log1p(pred_revenue))^2, na.rm = TRUE))
+    
+    metrics_fold <- data.frame(
+      model = model_name,
+      fold = fold_name,
+      n_test = nrow(test_data),
+      Log_RMSE = Log_RMSE,
+      Log_MAE = Log_MAE,
+      MAE = MAE,
+      RMSE = RMSE,
+      RMSLE = RMSLE
+    )
+    
+    predictions_fold <- data.frame(
+      model = model_name,
+      fold = fold_name,
+      actual_revenue = actual_revenue,
+      predicted_revenue = pred_revenue,
+      actual_log_revenue = actual_log,
+      predicted_log_revenue = pred_log
+    )
+    
+    metrics_all <- rbind(metrics_all, metrics_fold)
+    predictions_all <- rbind(predictions_all, predictions_fold)
+  }
+  
+  return(list(
+    metrics = metrics_all,
+    predictions = predictions_all
+  ))
+}
+```
+```{r}
+#log model selection continuing...
+
+cv_metrics_all <- data.frame()
+cv_predictions_all <- data.frame()
+
+for (model_name in names(candidate_formulas)) {
+  
+  result <- run_cv_for_model(
+    data = df_ms_cv,
+    folds = folds,
+    formula_obj = candidate_formulas[[model_name]],
+    model_name = model_name
+  )
+  
+  cv_metrics_all <- rbind(cv_metrics_all, result$metrics)
+  cv_predictions_all <- rbind(cv_predictions_all, result$predictions)
+}
+
+head(cv_metrics_all)
+names(cv_metrics_all)
+#summarize CV results
+cv_summary <- cv_metrics_all %>%
+  group_by(model) %>%
+  summarise(
+    n_folds = n(),
+    mean_Log_RMSE = mean(Log_RMSE, na.rm = TRUE),
+    se_Log_RMSE = sd(Log_RMSE, na.rm = TRUE) / sqrt(n()),
+    mean_Log_MAE = mean(Log_MAE, na.rm = TRUE),
+    mean_RMSLE = mean(RMSLE, na.rm = TRUE),
+    mean_MAE = mean(MAE, na.rm = TRUE),
+    mean_RMSE = mean(RMSE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(mean_Log_RMSE)
+
+cv_summary
+
+```
+```{r}
+#BIC for log limited model selection
+get_model_info <- function(model_name, formula_obj, data) {
+  
+  fit <- lm(formula_obj, data = data)
+  fit_summary <- summary(fit)
+  
+  data.frame(
+    model = model_name,
+    n = nobs(fit),
+    num_predictors = length(attr(terms(formula_obj), "term.labels")),
+    AIC = AIC(fit),
+    BIC = BIC(fit),
+    adj_R2 = fit_summary$adj.r.squared
+  )
+}
+
+bic_results <- do.call(
+  rbind,
+  lapply(names(candidate_formulas), function(model_name) {
+    get_model_info(
+      model_name = model_name,
+      formula_obj = candidate_formulas[[model_name]],
+      data = df_ms    # ← this is what you actually built
+    )
+  })
+)
+
+bic_results <- bic_results %>%
+  arrange(BIC) %>%
+  mutate(delta_BIC = BIC - min(BIC))
+
+print(bic_results)
+
+```
+```{r}
+model_selection_table <- cv_summary %>%
+  left_join(
+    bic_results %>%
+      select(model, num_predictors, AIC, BIC, delta_BIC, adj_R2),
+    by = "model"
+  ) %>%
+  arrange(BIC)
+
+knitr::kable(model_selection_table, digits = 3)
+
+```
+
+```{r}
+# Gamma GLM Model B and Model C
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+# Model B: full Wikipedia + theaters model
+gamma_formula_b <- revenue ~ log_V + log_U + log_R + log_E + log_theaters
+
+# Model C: reduced no-rigor model
+gamma_formula_c <- revenue ~ log_V + log_U + log_E + log_theaters
+
+gamma_formulas <- list(
+  "Gamma Model B: Full Wikipedia + theaters" = gamma_formula_b,
+  "Gamma Model C: Reduced no rigor" = gamma_formula_c
+)
+
+gamma_formulas
+```
+
+
+```{r}
+# ============================================================
+# Prepare common dataset for Gamma BIC comparison
+# ============================================================
+
+vars_gamma_all <- unique(unlist(lapply(gamma_formulas, all.vars)))
+
+missing_vars <- setdiff(vars_gamma_all, names(df_ms_cv))
+missing_vars
+
+df_gamma_common <- df_ms_cv %>%
+  filter(
+    complete.cases(across(all_of(vars_gamma_all))),
+    revenue > 0
+  )
+
+dim(df_gamma_common)
+summary(df_gamma_common$revenue)
+```
+
+```{r}
+#Fit Gamma GLM B and C with log link
+
+gamma_model_b <- glm(
+  gamma_formula_b,
+  data = df_gamma_common,
+  family = Gamma(link = "log"),
+  control = glm.control(maxit = 100)
+)
+
+gamma_model_c <- glm(
+  gamma_formula_c,
+  data = df_gamma_common,
+  family = Gamma(link = "log"),
+  control = glm.control(maxit = 100)
+)
+
+summary(gamma_model_b)
+summary(gamma_model_c)
+
+```
+```{r}
+#Fit Gamma GLM B and C with log link
+
+gamma_model_b <- glm(
+  gamma_formula_b,
+  data = df_gamma_common,
+  family = Gamma(link = "log"),
+  control = glm.control(maxit = 100)
+)
+
+gamma_model_c <- glm(
+  gamma_formula_c,
+  data = df_gamma_common,
+  family = Gamma(link = "log"),
+  control = glm.control(maxit = 100)
+)
+
+summary(gamma_model_b)
+summary(gamma_model_c)
+
+```
+```{r}
+#BIC / AIC comparison for Gamma B and C
+
+gamma_bic_bc <- do.call(
+  rbind,
+  lapply(names(gamma_formulas), function(model_name) {
+    
+    fit <- glm(
+      gamma_formulas[[model_name]],
+      data = df_gamma_common,
+      family = Gamma(link = "log"),
+      control = glm.control(maxit = 100)
+    )
+    
+    data.frame(
+      model = model_name,
+      n = nobs(fit),
+      num_predictors = length(attr(terms(gamma_formulas[[model_name]]), "term.labels")),
+      converged = fit$converged,
+      AIC = AIC(fit),
+      BIC = BIC(fit)
+    )
+  })
+)
+
+gamma_bic_bc <- gamma_bic_bc %>%
+  arrange(BIC) %>%
+  mutate(delta_BIC = BIC - min(BIC, na.rm = TRUE))
+
+knitr::kable(gamma_bic_bc, digits = 3)
+
+
+```
+```{r}
+#Cross-validation function for Gamma GLM
+run_gamma_model_cv <- function(data, folds, formula_obj, model_name) {
+  
+  metrics_all <- data.frame()
+  predictions_all <- data.frame()
+  
+  for (fold_name in names(folds)) {
+    
+    train_idx <- folds[[fold_name]]$train
+    test_idx <- folds[[fold_name]]$test
+    
+    train_data <- data[train_idx, ]
+    test_data <- data[test_idx, ]
+    
+    vars_needed <- all.vars(formula_obj)
+    
+    train_data <- train_data %>%
+      filter(
+        complete.cases(across(all_of(vars_needed))),
+        revenue > 0
+      )
+    
+    test_data <- test_data %>%
+      filter(
+        complete.cases(across(all_of(vars_needed))),
+        revenue > 0
+      )
+    
+    fit <- tryCatch(
+      glm(
+        formula_obj,
+        data = train_data,
+        family = Gamma(link = "log"),
+        control = glm.control(maxit = 100)
+      ),
+      error = function(e) {
+        return(NULL)
+      }
+    )
+    
+    if (is.null(fit)) {
+      next
+    }
+    
+    pred_revenue <- predict(
+      fit,
+      newdata = test_data,
+      type = "response"
+    )
+    
+    pred_safe <- pmax(pred_revenue, 1e-6)
+    
+    metrics_fold <- data.frame(
+      model = model_name,
+      fold = fold_name,
+      n_test = nrow(test_data),
+      converged = fit$converged,
+      bad_predictions = sum(pred_revenue <= 0, na.rm = TRUE),
+      
+      Log_RMSE = sqrt(mean(
+        (log(test_data$revenue) - log(pred_safe))^2,
+        na.rm = TRUE
+      )),
+      
+      Log_MAE = mean(
+        abs(log(test_data$revenue) - log(pred_safe)),
+        na.rm = TRUE
+      ),
+      
+      RMSLE = sqrt(mean(
+        (log1p(test_data$revenue) - log1p(pred_safe))^2,
+        na.rm = TRUE
+      )),
+      
+      MAE = mean(
+        abs(test_data$revenue - pred_revenue),
+        na.rm = TRUE
+      ),
+      
+      RMSE = sqrt(mean(
+        (test_data$revenue - pred_revenue)^2,
+        na.rm = TRUE
+      ))
+    )
+    
+    predictions_fold <- data.frame(
+      model = model_name,
+      fold = fold_name,
+      actual_revenue = test_data$revenue,
+      predicted_revenue = pred_revenue,
+      predicted_revenue_safe = pred_safe
+    )
+    
+    metrics_all <- rbind(metrics_all, metrics_fold)
+    predictions_all <- rbind(predictions_all, predictions_fold)
+  }
+  
+  return(list(
+    metrics = metrics_all,
+    predictions = predictions_all
+  ))
+}
+```
+
+```{r}
+# Run CV for Gamma Model B and C
+
+gamma_bc_cv_metrics_all <- data.frame()
+gamma_bc_cv_predictions_all <- data.frame()
+
+for (model_name in names(gamma_formulas)) {
+  
+  result <- run_gamma_model_cv(
+    data = df_ms_cv,
+    folds = folds,
+    formula_obj = gamma_formulas[[model_name]],
+    model_name = model_name
+  )
+  
+  gamma_bc_cv_metrics_all <- rbind(
+    gamma_bc_cv_metrics_all,
+    result$metrics
+  )
+  
+  gamma_bc_cv_predictions_all <- rbind(
+    gamma_bc_cv_predictions_all,
+    result$predictions
+  )
+}
+
+head(gamma_bc_cv_metrics_all)
+names(gamma_bc_cv_metrics_all)
+
+```
+```{r}
+#Summarize Gamma B and C CV results
+
+gamma_bc_cv_summary <- gamma_bc_cv_metrics_all %>%
+  group_by(model) %>%
+  summarise(
+    n_folds = n(),
+    mean_Log_RMSE = mean(Log_RMSE, na.rm = TRUE),
+    se_Log_RMSE = sd(Log_RMSE, na.rm = TRUE) / sqrt(n()),
+    mean_Log_MAE = mean(Log_MAE, na.rm = TRUE),
+    mean_RMSLE = mean(RMSLE, na.rm = TRUE),
+    mean_MAE = mean(MAE, na.rm = TRUE),
+    mean_RMSE = mean(RMSE, na.rm = TRUE),
+    total_bad_predictions = sum(bad_predictions, na.rm = TRUE),
+    all_converged = all(converged),
+    .groups = "drop"
+  ) %>%
+  arrange(mean_Log_RMSE)
+
+knitr::kable(gamma_bc_cv_summary, digits = 3)
+
+```
+```{r}
+#Summarize Gamma B and C CV results
+
+gamma_bc_cv_summary <- gamma_bc_cv_metrics_all %>%
+  group_by(model) %>%
+  summarise(
+    n_folds = n(),
+    mean_Log_RMSE = mean(Log_RMSE, na.rm = TRUE),
+    se_Log_RMSE = sd(Log_RMSE, na.rm = TRUE) / sqrt(n()),
+    mean_Log_MAE = mean(Log_MAE, na.rm = TRUE),
+    mean_RMSLE = mean(RMSLE, na.rm = TRUE),
+    mean_MAE = mean(MAE, na.rm = TRUE),
+    mean_RMSE = mean(RMSE, na.rm = TRUE),
+    total_bad_predictions = sum(bad_predictions, na.rm = TRUE),
+    all_converged = all(converged),
+    .groups = "drop"
+  ) %>%
+  arrange(mean_Log_RMSE)
+
+knitr::kable(gamma_bc_cv_summary, digits = 3)
+
+```
+```{r}
+#Combine Gamma BIC and CV results
+
+gamma_model_selection_table <- gamma_bc_cv_summary %>%
+  left_join(
+    gamma_bic_bc %>%
+      select(model, num_predictors, AIC, BIC, delta_BIC),
+    by = "model"
+  ) %>%
+  arrange(mean_Log_RMSE)
+
+knitr::kable(gamma_model_selection_table, digits = 3)
+
+```
+```{r}
+# Final Gamma GLM model: Model B
+final_gamma_model_b <- glm(
+  revenue ~ log_V + log_U + log_R + log_E + log_theaters,
+  data = df_gamma_common,
+  family = Gamma(link = "log"),
+  control = glm.control(maxit = 100)
+)
+
+summary(final_gamma_model_b)
+
+df_gamma_common$pred_gamma_b <- predict(
+  final_gamma_model_b,
+  newdata = df_gamma_common,
+  type = "response"
+)
+
+df_gamma_common$pred_gamma_b_safe <- pmax(df_gamma_common$pred_gamma_b, 1e-6)
+
+summary(df_gamma_common$pred_gamma_b)
+```
+
+```{r}
+df_gamma_common$pred_gamma_b <- predict(
+  final_gamma_model_b,
+  newdata = df_gamma_common,
+  type = "response"
+)
+
+df_gamma_common$pred_gamma_b_safe <- pmax(df_gamma_common$pred_gamma_b, 1e-6)
+
+summary(df_gamma_common$pred_gamma_b)
+#Final Gamma Model B metrics
+gamma_b_final_metrics <- data.frame(
+  model = "Final Gamma Model B: V + U + R+ E + theaters",
+  
+  Log_RMSE = sqrt(mean(
+    (log(df_gamma_common$revenue) - log(df_gamma_common$pred_gamma_b_safe))^2,
+    na.rm = TRUE
+  )),
+  
+  Log_MAE = mean(
+    abs(log(df_gamma_common$revenue) - log(df_gamma_common$pred_gamma_b_safe)),
+    na.rm = TRUE
+  ),
+  
+  RMSLE = sqrt(mean(
+    (log1p(df_gamma_common$revenue) - log1p(df_gamma_common$pred_gamma_b_safe))^2,
+    na.rm = TRUE
+  )),
+  
+  MAE = mean(
+    abs(df_gamma_common$revenue - df_gamma_common$pred_gamma_b),
+    na.rm = TRUE
+  ),
+  
+  RMSE = sqrt(mean(
+    (df_gamma_common$revenue - df_gamma_common$pred_gamma_b)^2,
+    na.rm = TRUE
+  )),
+  
+  bad_predictions = sum(df_gamma_common$pred_gamma_b <= 0, na.rm = TRUE)
+)
+
+gamma_b_final_metrics
+```
+```{r}
+ggplot(
+  df_gamma_common,
+  aes(x = revenue, y = pred_gamma_b_safe)
+) +
+  geom_point(alpha = 0.7) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed"
+  ) +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(
+    title = "Final Gamma Model B: Actual vs Predicted Revenue",
+    x = "Actual revenue, log scale",
+    y = "Predicted revenue, log scale"
+  )
+
+```
+```{r}
+df_gamma_common$gamma_b_fitted <- fitted(final_gamma_model_b)
+
+df_gamma_common$gamma_b_deviance_resid <- residuals(
+  final_gamma_model_b,
+  type = "deviance"
+)
+
+ggplot(
+  df_gamma_common,
+  aes(x = gamma_b_fitted, y = gamma_b_deviance_resid)
+) +
+  geom_point(alpha = 0.7) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  geom_smooth(se = FALSE) +
+  scale_x_log10() +
+  labs(
+    title = "Final Gamma Model B: Deviance Residuals vs Fitted Values",
+    x = "Fitted revenue, log scale",
+    y = "Deviance residuals"
+  )
+
+```
+```{r}
+#Post-prediction revenue quartile analysis
+# Final Gamma Model B
+
+df_gamma_common$revenue_quartile <- cut(
+  df_gamma_common$revenue,
+  breaks = quantile(
+    df_gamma_common$revenue,
+    probs = seq(0, 1, 0.25),
+    na.rm = TRUE
+  ),
+  include.lowest = TRUE,
+  labels = c(
+    "Q1 lowest revenue",
+    "Q2",
+    "Q3",
+    "Q4 highest revenue"
+  )
+)
+
+gamma_b_quartile_metrics <- df_gamma_common %>%
+  group_by(revenue_quartile) %>%
+  summarise(
+    n = n(),
+    
+    mean_actual = mean(revenue, na.rm = TRUE),
+    mean_predicted = mean(pred_gamma_b, na.rm = TRUE),
+    
+    bias = mean(pred_gamma_b - revenue, na.rm = TRUE),
+    
+    Log_RMSE = sqrt(mean(
+      (log(revenue) - log(pred_gamma_b_safe))^2,
+      na.rm = TRUE
+    )),
+    
+    RMSLE = sqrt(mean(
+      (log1p(revenue) - log1p(pred_gamma_b_safe))^2,
+      na.rm = TRUE
+    )),
+    
+    MAE = mean(
+      abs(revenue - pred_gamma_b),
+      na.rm = TRUE
+    ),
+    
+    RMSE = sqrt(mean(
+      (revenue - pred_gamma_b)^2,
+      na.rm = TRUE
+    )),
+    
+    .groups = "drop"
+  )
+
+knitr::kable(gamma_b_quartile_metrics, digits = 3)
+
+```
+
+```{r}
+
+#Plot Gamma Model B error by revenue quartile
+
+ggplot(
+  gamma_b_quartile_metrics,
+  aes(x = revenue_quartile, y = RMSLE)
+) +
+  geom_col() +
+  labs(
+    title = "Final Gamma Model B: Prediction Error by Revenue Quartile",
+    x = "Revenue quartile, used only after prediction",
+    y = "RMSLE"
+  ) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+```
+```{r}
+# Quartile comparison across Raw OLS, Log-log OLS B/C, and Gamma B
+# Prepare common dataset
+
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+# Variables needed for all models
+compare_vars <- c(
+  "revenue",
+  "V", "U", "R", "E", "theaters",
+  "log_revenue",
+  "log_V", "log_U", "log_R", "log_E", "log_theaters"
+)
+
+# Check missing variables
+setdiff(compare_vars, names(df_ms_cv))
+
+# Use the same complete-case dataset for all models
+df_compare <- df_ms_cv %>%
+  filter(
+    complete.cases(across(all_of(compare_vars))),
+    revenue > 0
+  )
+
+dim(df_compare)
+summary(df_compare$revenue)
+```
+```{r}
+#Create folds on the common comparison dataset
+
+set.seed(529)
+
+if (!exists("make_folds")) {
+  
+  make_folds <- function(data, k = 10) {
+    
+    n <- nrow(data)
+    fold_id <- sample(rep(1:k, length.out = n))
+    
+    folds <- lapply(1:k, function(i) {
+      list(
+        train = which(fold_id != i),
+        test = which(fold_id == i)
+      )
+    })
+    
+    names(folds) <- paste0("fold", 1:k)
+    
+    return(list(data = data, folds = folds))
+  }
+}
+
+fold_object_compare <- make_folds(df_compare, k = 10)
+
+df_compare_cv <- fold_object_compare$data
+folds_compare <- fold_object_compare$folds
+
+names(folds_compare)
+dim(df_compare_cv)
+# Function to generate CV predictions for each model
+predict_one_model_cv <- function(data, folds, model_name) {
+  
+  predictions_all <- data.frame()
+  
+  for (fold_name in names(folds)) {
+    
+    train_idx <- folds[[fold_name]]$train
+    test_idx <- folds[[fold_name]]$test
+    
+    train_data <- data[train_idx, ]
+    test_data <- data[test_idx, ]
+    
+    if (model_name == "Raw OLS baseline") {
+      
+      fit <- lm(
+        revenue ~ V + U + R + E + theaters,
+        data = train_data
+      )
+      
+      pred_revenue <- predict(fit, newdata = test_data)
+    }
+    
+    if (model_name == "Log-log OLS B: Full model") {
+      
+      fit <- lm(
+        log_revenue ~ log_V + log_U + log_R + log_E + log_theaters,
+        data = train_data
+      )
+      
+      pred_log <- predict(fit, newdata = test_data)
+      pred_revenue <- exp(pred_log)
+    }
+    
+    if (model_name == "Log-log OLS C: Reduced no rigor") {
+      
+      fit <- lm(
+        log_revenue ~ log_V + log_U + log_E + log_theaters,
+        data = train_data
+      )
+      
+      pred_log <- predict(fit, newdata = test_data)
+      pred_revenue <- exp(pred_log)
+    }
+    
+    if (model_name == "Gamma GLM B: Full model") {
+      
+      fit <- glm(
+        revenue ~ log_V + log_U + log_R + log_E + log_theaters,
+        data = train_data,
+        family = Gamma(link = "log"),
+        control = glm.control(maxit = 100)
+      )
+      
+      pred_revenue <- predict(
+        fit,
+        newdata = test_data,
+        type = "response"
+      )
+    }
+    
+    # Revenue cannot be negative.
+    # This is especially relevant for Raw OLS.
+    bad_predictions <- sum(pred_revenue <= 0, na.rm = TRUE)
+    pred_revenue_safe <- pmax(pred_revenue, 1e-6)
+    
+    predictions_fold <- data.frame(
+      row_id = test_idx,
+      fold = fold_name,
+      model = model_name,
+      actual_revenue = test_data$revenue,
+      predicted_revenue = pred_revenue,
+      predicted_revenue_safe = pred_revenue_safe,
+      bad_predictions = bad_predictions
+    )
+    
+    predictions_all <- rbind(predictions_all, predictions_fold)
+  }
+  
+  return(predictions_all)
+}
+```
+```{r}
+# Generate CV predictions for all models
+models_to_compare <- c(
+  "Raw OLS baseline",
+  "Log-log OLS B: Full model",
+  "Log-log OLS C: Reduced no rigor",
+  "Gamma GLM B: Full model"
+)
+
+all_cv_predictions <- data.frame()
+
+for (m in models_to_compare) {
+  
+  temp_pred <- predict_one_model_cv(
+    data = df_compare_cv,
+    folds = folds_compare,
+    model_name = m
+  )
+  
+  all_cv_predictions <- rbind(all_cv_predictions, temp_pred)
+}
+
+head(all_cv_predictions)
+dim(all_cv_predictions)
+
+#Create post-prediction revenue quartiles
+quartile_breaks <- quantile(
+  df_compare_cv$revenue,
+  probs = seq(0, 1, 0.25),
+  na.rm = TRUE
+)
+
+all_cv_predictions$revenue_quartile <- cut(
+  all_cv_predictions$actual_revenue,
+  breaks = quartile_breaks,
+  include.lowest = TRUE,
+  labels = c(
+    "Q1 lowest revenue",
+    "Q2",
+    "Q3",
+    "Q4 highest revenue"
+  )
+)
+
+table(all_cv_predictions$model, all_cv_predictions$revenue_quartile)
+```
+
+```{r}
+# Quartile-level prediction metrics
+quartile_metrics_all <- all_cv_predictions %>%
+  group_by(model, revenue_quartile) %>%
+  summarise(
+    n = n(),
+    
+    mean_actual = mean(actual_revenue, na.rm = TRUE),
+    mean_predicted = mean(predicted_revenue, na.rm = TRUE),
+    
+    bias = mean(predicted_revenue - actual_revenue, na.rm = TRUE),
+    
+    Log_RMSE = sqrt(mean(
+      (log(actual_revenue) - log(predicted_revenue_safe))^2,
+      na.rm = TRUE
+    )),
+    
+    RMSLE = sqrt(mean(
+      (log1p(actual_revenue) - log1p(predicted_revenue_safe))^2,
+      na.rm = TRUE
+    )),
+    
+    MAE = mean(
+      abs(actual_revenue - predicted_revenue),
+      na.rm = TRUE
+    ),
+    
+    RMSE = sqrt(mean(
+      (actual_revenue - predicted_revenue)^2,
+      na.rm = TRUE
+    )),
+    
+    bad_predictions = sum(predicted_revenue <= 0, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) %>%
+  arrange(revenue_quartile, model)
+
+knitr::kable(quartile_metrics_all, digits = 3)
+```
+```{r}
+# Improvement relative to Raw OLS baseline
+
+raw_reference <- quartile_metrics_all %>%
+  filter(model == "Raw OLS baseline") %>%
+  select(
+    revenue_quartile,
+    raw_RMSLE = RMSLE,
+    raw_MAE = MAE,
+    raw_RMSE = RMSE
+  )
+
+quartile_improvement <- quartile_metrics_all %>%
+  left_join(raw_reference, by = "revenue_quartile") %>%
+  mutate(
+    RMSLE_reduction = raw_RMSLE - RMSLE,
+    RMSLE_percent_reduction = 100 * (raw_RMSLE - RMSLE) / raw_RMSLE,
+    
+    MAE_reduction = raw_MAE - MAE,
+    MAE_percent_reduction = 100 * (raw_MAE - MAE) / raw_MAE,
+    
+    RMSE_reduction = raw_RMSE - RMSE,
+    RMSE_percent_reduction = 100 * (raw_RMSE - RMSE) / raw_RMSE
+  ) %>%
+  arrange(revenue_quartile, desc(RMSLE_percent_reduction))
+
+knitr::kable(quartile_improvement, digits = 3)
+
+```
+```{r}
+#Plot RMSLE by revenue quartile
+ggplot(
+  quartile_metrics_all,
+  aes(x = revenue_quartile, y = RMSLE, fill = model)
+) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "CV RMSLE by Revenue Quartile",
+    x = "Revenue quartile, used only after prediction",
+    y = "RMSLE",
+    fill = "Model"
+  ) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+```{r}
+# Plot prediction bias by revenue quartile
+ggplot(
+  quartile_metrics_all,
+  aes(x = revenue_quartile, y = bias, fill = model)
+) +
+  geom_col(position = "dodge") +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Cross-validated Prediction Bias by Revenue Quartile",
+    x = "Revenue quartile, used only after prediction",
+    y = "Mean bias: predicted - actual",
+    fill = "Model"
+  ) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+
+```
+
+```{r}
+# Q1 and Q2 only table
+q1q2_metrics <- quartile_metrics_all %>%
+  filter(revenue_quartile %in% c("Q1 lowest revenue", "Q2")) %>%
+  arrange(revenue_quartile, model)
+
+knitr::kable(q1q2_metrics, digits = 3)
+ggplot(
+  q1q2_metrics,
+  aes(x = revenue_quartile, y = RMSLE, fill = model)
+) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(
+    aes(label = round(RMSLE, 2)),
+    position = position_dodge(width = 0.9),
+    vjust = -0.3,
+    size = 3
+  ) +
+  labs(
+    title = "CV RMSLE for Q1 and Q2 Revenue Movies",
+    x = "Revenue quartile",
+    y = "RMSLE",
+    fill = "Model"
+  ) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+q1q2_bias <- quartile_metrics_all %>%
+  filter(revenue_quartile %in% c("Q1 lowest revenue", "Q2")) %>%
+  arrange(revenue_quartile, model)
+
+q1q2_bias
+ggplot(
+  q1q2_bias,
+  aes(x = revenue_quartile, y = bias, fill = model)
+) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_text(
+    aes(
+      label = comma(round(bias, 0)),
+      vjust = ifelse(bias >= 0, -0.3, 1.2)
+    ),
+    position = position_dodge(width = 0.9),
+    size = 3
+  ) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Zoomed-in CV Prediction Bias for Q1 and Q2",
+    x = "Revenue quartile",
+    y = "Mean bias: predicted - actual",
+    fill = "Model"
+  ) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+```
