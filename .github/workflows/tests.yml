@@ -20,7 +20,9 @@ jobs:
           r-version: "4.3"
 
       - name: Install testthat
-        run: Rscript -e "install.packages('testthat', repos='https://cloud.r-project.org', lib=.libPaths()[1])"
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: testthat
 
       - name: Run tests
-        run: Rscript -e "library(testthat); test_dir('tests/testthat')"
+        run: Rscript -e "testthat::test_dir('tests/testthat')"
