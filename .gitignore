@@ -1,0 +1,19 @@
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+.Rcheck/
+
+# knitr / rmarkdown cache
+*_cache/
+*_files/
+*.html
+
+# OS
+.DS_Store
+
+# Data files (download separately — see README)
+data/
+*.tsv
+*.csv
