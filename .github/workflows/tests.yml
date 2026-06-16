@@ -19,8 +19,8 @@ jobs:
         with:
           r-version: "4.3"
 
-      - name: Install dependencies
-        run: Rscript -e "install.packages('testthat', repos='https://cloud.r-project.org')"
+      - name: Install testthat
+        run: Rscript -e "install.packages('testthat', repos='https://cloud.r-project.org', lib=.libPaths()[1])"
 
       - name: Run tests
-        run: Rscript -e "testthat::test_dir('tests/testthat')"
+        run: Rscript -e "library(testthat); test_dir('tests/testthat')"
