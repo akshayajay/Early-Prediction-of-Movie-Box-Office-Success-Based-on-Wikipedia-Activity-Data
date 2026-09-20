@@ -13,7 +13,10 @@ Can pre-release Wikipedia activity predict a movie's opening weekend revenue —
 This project replicates and extends the methodology from the paper *"Predicting Box-Office Success of Motion Pictures with Wikipedia Clicks"* using the WikiPredict dataset (312 movies). It tests whether Wikipedia collaborative activity data — available weeks before release — outperforms Twitter-based predictions.
 
 Key findings from the replication:
-- Wikipedia-based predictors achieve **R² > 0.92** as early as 30 days before release
+- In-sample R² exceeds **0.92** as early as 30 days before release
+- Out-of-sample performance is lower: 10-fold cross-validated R² is **0.78** at the same
+  horizon. This is the figure to quote when comparing against other predictive models,
+  since the in-sample number is fit on the same 312 films it is evaluated on.
 - The combined feature set `{V, U, R, E, theaters}` consistently outperforms single-predictor models
 - Wikipedia activity surpasses the Twitter-based benchmark (R² = 0.98) near release date
 
@@ -21,7 +24,8 @@ Key findings from the replication:
 
 ## Dataset
 
-**WikiPredict** — publicly available at [wikimovies.github.io](https://wikimovies.github.io) or the original paper's repository.
+**WikiPredict** — available as [Dataset S1 of the original paper](https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0071226.s002&type=supplementary).
+Extract the contents of `wikipredict_data_pack/` into `data/`.
 
 The dataset contains:
 - `sample_of_312/` — 312 movies with opening weekend revenue and Wikipedia predictor time series
@@ -90,57 +94,106 @@ Rscript -e "testthat::test_dir('tests/testthat')"
 
 ## Causal Extension
 
-`R/causal_extension.R` adds an exploratory comparison of opening weekend revenue
-for films with above-median Wikipedia page views 30 days before release. It
-compares naive and adjusted regressions, estimates an ATT with propensity-score
-matching, checks covariate balance, and reports E-value sensitivity and robustness
-analyses. Confounders come from TMDb; theater count appears only in a robustness
-check.
+The replication above answers an associational question: does pre-release
+Wikipedia activity forecast opening revenue? `R/causal_extension.R` asks a
+different one. Among films that are otherwise comparable on budget, franchise
+status, studio, genre and runtime, is high pre-release activity associated
+with higher opening revenue?
 
-After installing packages with `Rscript packages.R` and downloading the dataset,
-run these commands from the repository root:
+**Design.** Treatment is cumulative page views at t = -30 above the median of
+films eligible for analysis. The outcome is log opening weekend revenue.
+TMDb provides production budget, franchise membership, runtime, primary genre,
+release month and the first listed production company (used as a major-studio
+proxy, not a verified distributor). Estimation uses nearest-neighbour propensity
+score matching without replacement and a 0.2 standard-deviation caliper on the
+estimated propensity score. Matching includes log budget, franchise status,
+studio, runtime and genre; release month enters the regression-adjusted comparison
+only. The intended estimand is the ATT under selection on observables, restricted
+to retained treated films when calipers exclude unmatched films.
+
+**Theater count is excluded from the matching covariates.** The analysis treats
+opening theater count as a potential mediator: studios may set it partly in
+response to pre-release buzz. It appears only as a robustness check. Whether it
+actually lies on that causal pathway is an assumption, not established by these data.
+
+**Results — run on September 20, 2026** (matched sample of **92 films, 46 treated**).
+All 312 films had page views at exactly t = -30. Budget eligibility excluded
+112 films (2 missing budgets and 110 nonpositive budgets), leaving 200 films:
+100 treated and 100 controls. Matching retained 46 films per group, or **46% of
+the eligible treated films**. The naive and regression-adjusted estimates below
+use all 200 eligible films; the matched estimate uses the retained 92.
+
+| Estimate | Value |
+|---|---|
+| Naive difference | 3.761 log points |
+| Regression-adjusted | 2.122 log points |
+| Matched ATT estimate | 1.420 log points (313.8%) |
+| 95% CI | [0.384, 2.457] log points |
+| p-value | 0.0087 |
+| E-value (estimate) | 2.51 |
+| E-value (CI limit) | 1.51 |
+
+**Balance remains inadequate.** The plot in `output/causal/love_plot.png` shows
+four covariate indicators above an absolute standardized mean difference of 0.1:
+runtime (0.216), Action (0.109), Fantasy (0.155), and Romance (0.218).
+The propensity-score distance also remains imbalanced (0.120). These diagnostics
+and the substantial loss of treated films limit a causal interpretation; the
+positive estimate should be treated as exploratory.
+
+**Robustness.** The coefficient is 0.515 for continuous log views and 4.019 for
+top-versus-bottom terciles. Adding theaters to the matched regression reduces the
+high-activity coefficient from 1.420 to 0.932 log points. That attenuation alone
+does not establish mediation. Full standard errors and p-values are in the report.
+
+**What this does and does not show.** The E-value of 2.51 summarizes the strength
+of associations an unmeasured confounder would need with both treatment and
+outcome to explain away the estimate, under the E-value assumptions and the
+continuous-outcome conversion. Marketing spend is an obvious missing confounder.
+Sensitivity analysis does not repair the remaining measured imbalance. The script
+uses the first TMDb title-search result, so film identity matches also require
+validation. Reported uncertainty uses conventional `lm` standard errors, not
+matched-pair robust inference. This is an exploratory adjusted association under
+selection on observables, not an established causal effect; the identifying
+assumption cannot be verified from these data.
+
+### Running it
 
 ```bash
+Rscript packages.R
 export TMDB_API_KEY="your-tmdb-api-key"
-# Optional: defaults to the repository's data/ directory.
-export WIKIPREDICT_DIR="/path/to/data"
+export WIKIPREDICT_DIR="data"          # optional, defaults to data/
 Rscript R/causal_extension.R
 ```
 
-Create a TMDb API key through your [TMDb account settings](https://www.themoviedb.org/settings/api).
-Keep the key in your environment rather than committing it to the repository.
+Get a TMDb key from your [TMDb account settings](https://www.themoviedb.org/settings/api).
+Keep it in your environment or a local `.Renviron` file, which is ignored by Git.
+The script accepts the original supplementary dataset's column names and common
+aliases, with a positional fallback for predictor columns.
 
-The script expects tab-separated inputs in the dataset layout above, with named
-movie metadata columns and predictor time columns named `t`, `day`, or
-`days_to_release`, plus a views column named `v`, `views`, or `pageviews`
-(case-insensitive). Unlike the replication notebook, it does not rename columns
-by position; a predictor time header such as `movie_time` must be renamed before
-using this supplied script.
+Outputs land in `output/causal/` (gitignored):
 
-Outputs go to `output/causal/` (ignored by Git):
+- `tmdb_metadata.csv` — cached TMDb metadata, reused on later runs
+- `love_plot.png` — standardized covariate balance before and after matching
+- `covariate_balance.csv` — numeric balance diagnostics
+- `causal_results.txt` — estimates, sample retention, sensitivity and robustness checks
+- `session_info.txt` — R and package versions for the run
 
-- `tmdb_metadata.csv`: cached TMDb metadata, reused on later runs.
-- `love_plot.png`: covariate balance plot.
-- `causal_results.txt`: estimates and sensitivity summary.
-
-This script is included as supplied and has not been validated end to end against
-the dataset. Its causal interpretation depends on selection on observables;
-unmeasured factors such as marketing spend may confound the estimates. The
-extension does not establish a randomized causal effect or add verified findings
-to the replication results above.
+Metadata for this extension comes from [TMDb](https://www.themoviedb.org/).
+This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ---
 
 ## Project Structure
 
 ```
-├── box_office_prediction.Rmd   # Full analysis (replication + extension)
+├── box_office_prediction.Rmd   # Replication and predictive extension
 ├── R/
 │   ├── causal_extension.R      # Matching, ATT estimation, and sensitivity analysis
 │   └── utils.R                 # Utility functions (compute_correlations, cv_r2, etc.)
 ├── tests/
 │   └── testthat/
 │       └── test_utils.R        # Unit tests (no data files required)
+├── output/causal/              # Generated results (gitignored)
 ├── packages.R                  # Package installer
 ├── .gitignore
 └── README.md
@@ -150,7 +203,7 @@ to the replication results above.
 
 ## Tech Stack
 
-`R` · `ggplot2` · `testthat` · base R (`lm`, `cor`)
+`R` · `ggplot2` · `MatchIt` · `cobalt` · `EValue` · `testthat` · base R (`lm`, `cor`)
 
 ---
 
