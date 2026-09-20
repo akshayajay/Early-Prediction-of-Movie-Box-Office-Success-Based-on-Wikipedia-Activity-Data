@@ -17,3 +17,6 @@
 data/
 *.tsv
 *.csv
+
+# Generated causal analysis reports, plots, and metadata cache
+output/causal/

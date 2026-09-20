@@ -88,11 +88,55 @@ Rscript -e "testthat::test_dir('tests/testthat')"
 
 ---
 
+## Causal Extension
+
+`R/causal_extension.R` adds an exploratory comparison of opening weekend revenue
+for films with above-median Wikipedia page views 30 days before release. It
+compares naive and adjusted regressions, estimates an ATT with propensity-score
+matching, checks covariate balance, and reports E-value sensitivity and robustness
+analyses. Confounders come from TMDb; theater count appears only in a robustness
+check.
+
+After installing packages with `Rscript packages.R` and downloading the dataset,
+run these commands from the repository root:
+
+```bash
+export TMDB_API_KEY="your-tmdb-api-key"
+# Optional: defaults to the repository's data/ directory.
+export WIKIPREDICT_DIR="/path/to/data"
+Rscript R/causal_extension.R
+```
+
+Create a TMDb API key through your [TMDb account settings](https://www.themoviedb.org/settings/api).
+Keep the key in your environment rather than committing it to the repository.
+
+The script expects tab-separated inputs in the dataset layout above, with named
+movie metadata columns and predictor time columns named `t`, `day`, or
+`days_to_release`, plus a views column named `v`, `views`, or `pageviews`
+(case-insensitive). Unlike the replication notebook, it does not rename columns
+by position; a predictor time header such as `movie_time` must be renamed before
+using this supplied script.
+
+Outputs go to `output/causal/` (ignored by Git):
+
+- `tmdb_metadata.csv`: cached TMDb metadata, reused on later runs.
+- `love_plot.png`: covariate balance plot.
+- `causal_results.txt`: estimates and sensitivity summary.
+
+This script is included as supplied and has not been validated end to end against
+the dataset. Its causal interpretation depends on selection on observables;
+unmeasured factors such as marketing spend may confound the estimates. The
+extension does not establish a randomized causal effect or add verified findings
+to the replication results above.
+
+---
+
 ## Project Structure
 
 ```
 ├── box_office_prediction.Rmd   # Full analysis (replication + extension)
 ├── R/
+│   ├── causal_extension.R      # Matching, ATT estimation, and sensitivity analysis
 │   └── utils.R                 # Utility functions (compute_correlations, cv_r2, etc.)
 ├── tests/
 │   └── testthat/
